@@ -6,7 +6,7 @@ import numpy as np
 import time
 
 # ✅ Load YOLO model
-model = YOLO("runs/detect/train7/weights/best.pt")
+model = YOLO("../YOLO/best.pt")
 
 # ✅ Initialize PaddleOCR table extractor
 table_engine = PPStructureV3()
@@ -30,7 +30,6 @@ def extract_table_name(header, rows):
 
 
 def process_cropped_table(img_crop, bbox):
-
     result = table_engine.predict(
         img_crop,
         det_kwargs={"use_gpu": False, "lang": "en"},
@@ -41,34 +40,32 @@ def process_cropped_table(img_crop, bbox):
         use_region_detection=False,
         use_table=True,
         use_ocr=True,
-        use_doc_preprocessing=False,
+        use_doc_preprocessing=True,
         use_structure_vqa=False
-        )
+    )
 
-    if not isinstance(result, list):
-        return
+    print(f"📄 Processed table with bbox {bbox} → result: {result}")
 
-    for page in result:
-        table_list = page.get("table_res_list", [])
-        if not table_list:
-            continue  # Still run OCR fallback if needed
+    print(result[0])
+    return
 
+    # 🚨 CASE 1: Proper table → result is dict
+    if isinstance(result, dict):
+        table_list = result.get("table_res_list", [])
         for table in table_list:
+            print("=" * 25)
+            print(table)
             header = table.get("header", [])
             rows = table.get("cell", [])
 
-            # 📌 Check if this is actually NOTES
-            combined_text = ' '.join(header or []) + ' '.join([' '.join(row) for row in rows]).lower()
+            combined_text = ' '.join(header or []) + ' ' + ' '.join([' '.join(row) for row in rows]).lower()
             if "note" in combined_text:
-                # Save in notes dict
-                notes_entry = {
+                notes[f"note_{len(notes)+1}"] = {
                     "bbox": bbox,
-                    "text": combined_text
+                    "text": combined_text.strip()
                 }
-                notes[f"note_{len(notes)+1}"] = notes_entry
-                continue  # Skip adding to tables
+                continue
 
-            # Otherwise, process as normal table
             name = extract_table_name(header, rows)
             table_obj = {
                 "name": name,
@@ -82,6 +79,29 @@ def process_cropped_table(img_crop, bbox):
                 existing["rows"].extend(table_obj["rows"])
             else:
                 tables.append(table_obj)
+
+    # 🚨 CASE 2: Non-table (like "NOTES") → result is list
+    elif isinstance(result, list):
+        combined_text = ""
+        for page in result:
+            ocr_blocks = page.get("overall_ocr_res", []) if isinstance(page, dict) else []
+            for block in ocr_blocks:
+                if isinstance(block, dict):
+                    combined_text += block.get("text", "") + " "
+                elif isinstance(block, str):
+                    combined_text += block + " "
+
+        if "note" in combined_text.lower():
+            notes[f"note_{len(notes)+1}"] = {
+                "bbox": bbox,
+                "text": combined_text.strip()
+            }
+
+
+    else:
+        # Unknown structure; skip
+        return
+
 
 
 # Dummy warm-up image to fully preload models (avoid loading during prediction)
